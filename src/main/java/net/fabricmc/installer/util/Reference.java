@@ -19,7 +19,7 @@ package net.fabricmc.installer.util;
 public class Reference {
 	public static final String LOADER_NAME = "fabric-loader";
 
-	public static String metaServerUrl = "https://meta.fabricmc.net/";
+	public static String metaServerUrl = "https://meta.combatreforged.com/";
 	public static String fabricApiUrl = "https://www.curseforge.com/minecraft/mc-mods/fabric-api/";
 
 	public static String getMetaServerEndpoint(String path) {
