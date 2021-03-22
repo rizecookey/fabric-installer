@@ -42,12 +42,13 @@ shadowJar {
 def bootstrapVersion = "0.1.1"
 def bootstrapArch = "i686"
 
-/*
+
 task downloadBootstrap(type: Download) {
 	src "https://maven.fabricmc.net/net/fabricmc/fabric-installer-native-bootstrap/windows-${bootstrapArch}/${bootstrapVersion}/windows-${bootstrapArch}-${bootstrapVersion}.exe"
 	dest project.buildDir
 }
 
+/*
 task nativeExe(dependsOn: [shadowJar, downloadBootstrap], type: FileOutput) {
 	output = file("${projectDir}/build/libs/${archivesBaseName}-${project.version}.exe")
 	outputs.upToDateWhen { false }
@@ -66,16 +67,16 @@ task nativeExe(dependsOn: [shadowJar, downloadBootstrap], type: FileOutput) {
 			output.append shadowJar.archiveFile.get().getAsFile().readBytes()
 		}
 	}
-}
-build.dependsOn nativeExe
-*/
+}*/
+build.dependsOn shadowJar
+
 jar {
     manifest {
         attributes 'Implementation-Title': 'FabricInstaller',
                 'Implementation-Version': project.version,
                 'Main-Class': 'net.fabricmc.installer.Main'
     }
-	enabled = false
+	enabled = true
 }
 /*
 if (ENV.SIGNING_SERVER) {
