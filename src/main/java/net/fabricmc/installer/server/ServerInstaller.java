@@ -27,6 +27,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -38,13 +39,18 @@ import java.util.Map;
 import java.util.Set;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
 import java.util.jar.JarInputStream;
 import java.util.jar.Manifest;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 
 import mjson.Json;
 
+import net.fabricmc.installer.LoaderVersion;
 import net.fabricmc.installer.util.InstallerProgress;
 import net.fabricmc.installer.util.Library;
 import net.fabricmc.installer.util.Reference;
@@ -52,111 +58,167 @@ import net.fabricmc.installer.util.Utils;
 
 public class ServerInstaller {
 	private static final String servicesDir = "META-INF/services/";
+	private static final String manifestPath = "META-INF/MANIFEST.MF";
+	public static final String DEFAULT_LAUNCH_JAR_NAME = "fabric-server-launch.jar";
+	private static final Pattern SIGNATURE_FILE_PATTERN = Pattern.compile("META-INF/[^/]+\\.(SF|DSA|RSA|EC)");
 
-	public static void install(Path dir, String loaderVersion, String gameVersion, InstallerProgress progress) throws IOException {
-		progress.updateProgress(new MessageFormat(Utils.BUNDLE.getString("progress.installing.server")).format(new Object[]{String.format("%s(%s)", loaderVersion, gameVersion)}));
+	public static void install(Path dir, LoaderVersion loaderVersion, String gameVersion, InstallerProgress progress) throws IOException {
+		Path launchJar = dir.resolve(DEFAULT_LAUNCH_JAR_NAME);
+		install(dir, loaderVersion, gameVersion, progress, launchJar);
+	}
+
+	public static void install(Path dir, LoaderVersion loaderVersion, String gameVersion, InstallerProgress progress, Path launchJar) throws IOException {
+		progress.updateProgress(new MessageFormat(Utils.BUNDLE.getString("progress.installing.server")).format(new Object[]{String.format("%s(%s)", loaderVersion.name, gameVersion)}));
 
 		Files.createDirectories(dir);
 
-		Path libsDir = dir.resolve(".fabric-installer").resolve("libraries");
+		Path libsDir = dir.resolve("libraries");
 		Files.createDirectories(libsDir);
 
 		progress.updateProgress(Utils.BUNDLE.getString("progress.download.libraries"));
 
-		URL profileUrl = new URL(Reference.getMetaServerEndpoint(String.format("v2/versions/loader/%s/%s/server/json", gameVersion, loaderVersion)));
-		Json json = Json.read(Utils.readTextFile(profileUrl));
+		List<Library> libraries = new ArrayList<>();
+		String mainClassMeta;
 
+		if (loaderVersion.path == null) { // loader jar unavailable, grab everything from meta
+			Json json = Json.read(Utils.readTextFile(new URL(Reference.getMetaServerEndpoint(String.format("v2/versions/loader/%s/%s/server/json", gameVersion, loaderVersion.name)))));
+
+			for (Json libraryJson : json.at("libraries").asJsonList()) {
+				libraries.add(new Library(libraryJson));
+			}
+
+			mainClassMeta = json.at("mainClass").asString();
+		} else { // loader jar available, generate library list from it
+			libraries.add(new Library(String.format("net.fabricmc:fabric-loader:%s", loaderVersion.name), null, loaderVersion.path));
+			libraries.add(new Library(String.format("net.fabricmc:intermediary:%s", gameVersion), "https://maven.fabricmc.net/", null));
+
+			try (ZipFile zf = new ZipFile(loaderVersion.path.toFile())) {
+				ZipEntry entry = zf.getEntry("fabric-installer.json");
+				Json json = Json.read(Utils.readString(zf.getInputStream(entry)));
+				Json librariesElem = json.at("libraries");
+
+				for (Json libraryJson : librariesElem.at("common").asJsonList()) {
+					libraries.add(new Library(libraryJson));
+				}
+
+				for (Json libraryJson : librariesElem.at("server").asJsonList()) {
+					libraries.add(new Library(libraryJson));
+				}
+
+				mainClassMeta = json.at("mainClass").at("server").asString();
+			}
+		}
+
+		String mainClassManifest = "net.fabricmc.loader.launch.server.FabricServerLauncher";
 		List<Path> libraryFiles = new ArrayList<>();
 
-		for (Json libraryJson : json.at("libraries").asJsonList()) {
-			Library library = new Library(libraryJson);
+		for (Library library : libraries) {
+			Path libraryFile = libsDir.resolve(library.getPath());
 
-			progress.updateProgress(new MessageFormat(Utils.BUNDLE.getString("progress.download.library.entry")).format(new Object[]{library.name}));
-			Path libraryFile = libsDir.resolve(library.getFileName());
-			Utils.downloadFile(new URL(library.getURL()), libraryFile);
+			if (library.inputPath == null) {
+				progress.updateProgress(new MessageFormat(Utils.BUNDLE.getString("progress.download.library.entry")).format(new Object[]{library.name}));
+				Utils.downloadFile(new URL(library.getURL()), libraryFile);
+			} else {
+				Files.createDirectories(libraryFile.getParent());
+				Files.copy(library.inputPath, libraryFile, StandardCopyOption.REPLACE_EXISTING);
+			}
+
 			libraryFiles.add(libraryFile);
+
+			if (library.name.matches("net\\.fabricmc:fabric-loader:.*")) {
+				try (JarFile jarFile = new JarFile(libraryFile.toFile())) {
+					Manifest manifest = jarFile.getManifest();
+					mainClassManifest = manifest.getMainAttributes().getValue("Main-Class");
+				}
+			}
 		}
 
 		progress.updateProgress(Utils.BUNDLE.getString("progress.generating.launch.jar"));
 
-		Path launchJar = dir.resolve("fabric-server-launch.jar");
-		String mainClass = json.at("mainClass").asString();
-		makeLaunchJar(launchJar, mainClass, libraryFiles, progress);
-
-		progress.updateProgress(new MessageFormat(Utils.BUNDLE.getString("progress.done.start.server")).format(new Object[]{launchJar.getFileName().toString()}));
+		boolean shadeLibraries = Utils.compareVersions(loaderVersion.name, "0.12.5") <= 0; // FabricServerLauncher in Fabric Loader 0.12.5 and earlier requires shading the libs into the launch jar
+		makeLaunchJar(launchJar, mainClassMeta, mainClassManifest, libraryFiles, shadeLibraries, progress);
 	}
 
-	private static void makeLaunchJar(Path file, String mainclass, List<Path> libraryFiles, InstallerProgress progress) throws IOException {
+	private static void makeLaunchJar(Path file, String launchMainClass, String jarMainClass, List<Path> libraryFiles,
+			boolean shadeLibraries, InstallerProgress progress) throws IOException {
 		Files.deleteIfExists(file);
 
-		OutputStream outputStream = Files.newOutputStream(file);
-		ZipOutputStream zipOutputStream = new ZipOutputStream(outputStream);
+		try (ZipOutputStream zipOutputStream = new ZipOutputStream(Files.newOutputStream(file))) {
+			Set<String> addedEntries = new HashSet<>();
 
-		Set<String> addedEntries = new HashSet<>();
-
-		{
-			addedEntries.add("META-INF/MANIFEST.MF");
-			zipOutputStream.putNextEntry(new ZipEntry("META-INF/MANIFEST.MF"));
+			addedEntries.add(manifestPath);
+			zipOutputStream.putNextEntry(new ZipEntry(manifestPath));
 
 			Manifest manifest = new Manifest();
-			manifest.getMainAttributes().put(new Attributes.Name("Manifest-Version"), "1.0");
-			manifest.getMainAttributes().put(new Attributes.Name("Main-Class"), "net.fabricmc.loader.launch.server.FabricServerLauncher");
+			Attributes mainAttributes = manifest.getMainAttributes();
+
+			mainAttributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+			mainAttributes.put(Attributes.Name.MAIN_CLASS, jarMainClass);
+
+			if (!shadeLibraries) {
+				mainAttributes.put(Attributes.Name.CLASS_PATH, libraryFiles.stream()
+						.map(f -> file.getParent().relativize(f).normalize().toString().replace("\\", "/"))
+						.collect(Collectors.joining(" ")));
+			}
+
 			manifest.write(zipOutputStream);
 
 			zipOutputStream.closeEntry();
 
 			addedEntries.add("fabric-server-launch.properties");
 			zipOutputStream.putNextEntry(new ZipEntry("fabric-server-launch.properties"));
-			zipOutputStream.write(("launch.mainClass=" + mainclass + "\n").getBytes(StandardCharsets.UTF_8));
+			zipOutputStream.write(("launch.mainClass=" + launchMainClass + "\n").getBytes(StandardCharsets.UTF_8));
 			zipOutputStream.closeEntry();
 
-			Map<String, Set<String>> services = new HashMap<>();
-			byte[] buffer = new byte[32768];
+			if (shadeLibraries) {
+				Map<String, Set<String>> services = new HashMap<>();
+				byte[] buffer = new byte[32768];
 
-			for (Path f : libraryFiles) {
-				progress.updateProgress(new MessageFormat(Utils.BUNDLE.getString("progress.generating.launch.jar.library")).format(new Object[]{f.getFileName().toString()}));
+				for (Path f : libraryFiles) {
+					progress.updateProgress(new MessageFormat(Utils.BUNDLE.getString("progress.generating.launch.jar.library")).format(new Object[]{f.getFileName().toString()}));
 
-				// read service definitions (merging them), copy other files
-				try (InputStream is = Files.newInputStream(f);
-						JarInputStream jis = new JarInputStream(is)) {
-					JarEntry entry;
-					while ((entry = jis.getNextJarEntry()) != null) {
-						if (entry.isDirectory()) continue;
+					// read service definitions (merging them), copy other files
+					try (JarInputStream jis = new JarInputStream(Files.newInputStream(f))) {
+						JarEntry entry;
 
-						String name = entry.getName();
+						while ((entry = jis.getNextJarEntry()) != null) {
+							if (entry.isDirectory()) continue;
 
-						if (name.startsWith(servicesDir) && name.indexOf('/', servicesDir.length()) < 0) { // service definition file
-							parseServiceDefinition(name, jis, services);
-						} else if (!addedEntries.add(name)) {
-							System.out.printf("duplicate file: %s%n", name);
-						} else {
-							JarEntry newEntry = new JarEntry(name);
-							zipOutputStream.putNextEntry(newEntry);
+							String name = entry.getName();
 
-							int r;
-							while ((r = jis.read(buffer, 0, buffer.length)) >= 0) {
-								zipOutputStream.write(buffer, 0, r);
+							if (name.startsWith(servicesDir) && name.indexOf('/', servicesDir.length()) < 0) { // service definition file
+								parseServiceDefinition(name, jis, services);
+							} else if (SIGNATURE_FILE_PATTERN.matcher(name).matches()) {
+								// signature file, ignore
+							} else if (!addedEntries.add(name)) {
+								System.out.printf("duplicate file: %s%n", name);
+							} else {
+								JarEntry newEntry = new JarEntry(name);
+								zipOutputStream.putNextEntry(newEntry);
+
+								int r;
+
+								while ((r = jis.read(buffer, 0, buffer.length)) >= 0) {
+									zipOutputStream.write(buffer, 0, r);
+								}
+
+								zipOutputStream.closeEntry();
 							}
-
-							zipOutputStream.closeEntry();
 						}
 					}
 				}
-			}
 
-			// write service definitions
-			for (Map.Entry<String, Set<String>> entry : services.entrySet()) {
-				JarEntry newEntry = new JarEntry(entry.getKey());
-				zipOutputStream.putNextEntry(newEntry);
+				// write service definitions
+				for (Map.Entry<String, Set<String>> entry : services.entrySet()) {
+					JarEntry newEntry = new JarEntry(entry.getKey());
+					zipOutputStream.putNextEntry(newEntry);
 
-				writeServiceDefinition(entry.getValue(), zipOutputStream);
+					writeServiceDefinition(entry.getValue(), zipOutputStream);
 
-				zipOutputStream.closeEntry();
+					zipOutputStream.closeEntry();
+				}
 			}
 		}
-
-		zipOutputStream.close();
-		outputStream.close();
 	}
 
 	private static void parseServiceDefinition(String name, InputStream rawIs, Map<String, Set<String>> services) throws IOException {

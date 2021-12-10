@@ -16,14 +16,19 @@
 
 package net.fabricmc.installer.server;
 
-import mjson.Json;
-import net.fabricmc.installer.InstallerGui;
-import net.fabricmc.installer.util.LauncherMeta;
-import net.fabricmc.installer.util.Utils;
-
-import javax.swing.*;
-import java.awt.*;
-import java.io.*;
+import java.awt.Color;
+import java.awt.Container;
+import java.awt.FlowLayout;
+import java.awt.Font;
+import java.awt.HeadlessException;
+import java.awt.Toolkit;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -39,17 +44,34 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.stream.Collectors;
 
-public class ServerPostInstallDialog extends JDialog {
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
+import javax.swing.JDialog;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JTextField;
+import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
+import javax.swing.UnsupportedLookAndFeelException;
 
+import mjson.Json;
+
+import net.fabricmc.installer.InstallerGui;
+import net.fabricmc.installer.util.LauncherMeta;
+import net.fabricmc.installer.util.Utils;
+
+public class ServerPostInstallDialog extends JDialog {
+	private static final String launchCommand = "java -Xmx2G -jar fabric-server-launch.jar nogui";
 	private static final int MB = 1000000;
 
-	private JPanel panel = new JPanel();
+	private final JPanel panel = new JPanel();
 
-	private ServerHandler serverHandler;
-	private String minecraftVersion;
-	private Path installDir;
-	private Path minecraftJar;
-	private Path minecraftJarTmp;
+	private final ServerHandler serverHandler;
+	private final String minecraftVersion;
+	private final Path installDir;
+	private final Path minecraftJar;
+	private final Path minecraftJarTmp;
 
 	private JLabel serverJarLabel;
 	private JButton downloadButton;
@@ -84,11 +106,9 @@ public class ServerPostInstallDialog extends JDialog {
 
 		addRow(panel, panel -> panel.add(fontSize(new JLabel(Utils.BUNDLE.getString("prompt.server.info.command")), 15)));
 		addRow(panel, panel -> {
-			JTextField textField = new JTextField("java -jar fabric-server-launch.jar");
+			JTextField textField = new JTextField(launchCommand);
 			textField.setHorizontalAlignment(JTextField.CENTER);
 			panel.add(textField);
-
-
 		});
 
 		addRow(panel, panel -> {
@@ -106,23 +126,24 @@ public class ServerPostInstallDialog extends JDialog {
 			});
 			panel.add(closeButton);
 		});
-
 	}
 
 	private boolean isValidJarPresent() {
 		if (!Files.exists(minecraftJar)) {
 			return false;
 		}
+
 		try (JarFile jarFile = new JarFile(minecraftJar.toFile())) {
 			JarEntry versionEntry = jarFile.getJarEntry("version.json");
+
 			if (versionEntry == null) {
 				return false;
 			}
+
 			InputStream inputStream = jarFile.getInputStream(versionEntry);
 
-
-
 			String text;
+
 			try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
 				text = reader.lines().collect(Collectors.joining("\n"));
 			}
@@ -141,6 +162,7 @@ public class ServerPostInstallDialog extends JDialog {
 		if (serverJarLabel == null) {
 			serverJarLabel = new JLabel();
 		}
+
 		if (isValidJarPresent()) {
 			serverJarLabel.setText(new MessageFormat(Utils.BUNDLE.getString("prompt.server.jar.valid")).format(new Object[]{minecraftVersion}));
 			color(serverJarLabel, Color.GREEN.darker());
@@ -152,6 +174,7 @@ public class ServerPostInstallDialog extends JDialog {
 
 	private void doServerJarDownload() {
 		downloadButton.setEnabled(false);
+
 		try {
 			Files.deleteIfExists(minecraftJar);
 			Files.deleteIfExists(minecraftJarTmp);
@@ -160,6 +183,7 @@ public class ServerPostInstallDialog extends JDialog {
 			serverHandler.error(e);
 			return;
 		}
+
 		new Thread(() -> {
 			try {
 				URL url = new URL(LauncherMeta.getLauncherMeta().getVersion(minecraftVersion).getVersionMeta().downloads.get("server").url);
@@ -174,14 +198,16 @@ public class ServerPostInstallDialog extends JDialog {
 				byte[] buffer = new byte[1024];
 				long downloaded = 0;
 				int len;
+
 				while ((len = inputStream.read(buffer, 0, 1024)) >= 0) {
 					downloaded += len;
 
-					final String labelText = String.format("Downloading %d/%d MB", downloaded / MB, finalSize / MB);
+					final String labelText = new MessageFormat(Utils.BUNDLE.getString("prompt.server.downloading")).format(new Object[] {downloaded / MB, finalSize / MB});
 					SwingUtilities.invokeLater(() -> color(serverJarLabel, Color.BLUE).setText(labelText));
 
 					bufferedOutputStream.write(buffer, 0, len);
 				}
+
 				bufferedOutputStream.close();
 				inputStream.close();
 
@@ -189,7 +215,6 @@ public class ServerPostInstallDialog extends JDialog {
 
 				updateServerJarLabel();
 				downloadButton.setEnabled(true);
-
 			} catch (IOException e) {
 				color(serverJarLabel, Color.RED).setText(e.getMessage());
 				serverHandler.error(e);
@@ -198,13 +223,12 @@ public class ServerPostInstallDialog extends JDialog {
 	}
 
 	private void generateLaunchScripts() {
-		String launchCommand = "java -jar fabric-server-launch.jar";
-
 		Map<Path, String> launchScripts = new HashMap<>();
 		launchScripts.put(installDir.resolve("start.bat"), launchCommand + "\npause");
 		launchScripts.put(installDir.resolve("start.sh"), "#!/usr/bin/env bash\n" + launchCommand);
 
 		boolean exists = launchScripts.entrySet().stream().anyMatch(entry -> Files.exists(entry.getKey()));
+
 		if (exists && (JOptionPane.showConfirmDialog(this, Utils.BUNDLE.getString("prompt.server.overwrite"), "Warning", JOptionPane.YES_NO_OPTION) == JOptionPane.NO_OPTION)) {
 			return;
 		}

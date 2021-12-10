@@ -16,16 +16,15 @@
 
 package net.fabricmc.installer.util;
 
-import mjson.Json;
-
 import java.io.IOException;
 import java.net.URL;
 import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
-public class MetaHandler extends CompletableHandler<List<MetaHandler.GameVersion>> {
+import mjson.Json;
 
+public class MetaHandler extends CompletableHandler<List<MetaHandler.GameVersion>> {
 	private final String metaUrl;
 	private List<GameVersion> versions;
 
@@ -50,13 +49,18 @@ public class MetaHandler extends CompletableHandler<List<MetaHandler.GameVersion
 		return Collections.unmodifiableList(versions);
 	}
 
-	public GameVersion getLatestVersion(boolean snapshot){
-		if(snapshot){
-			return versions.get(0);
-		} else {
-			return versions.stream()
-				.filter(GameVersion::isStable).findFirst().orElse(null);
+	public GameVersion getLatestVersion(boolean snapshot) {
+		if (versions.isEmpty()) throw new RuntimeException("no versions available at "+metaUrl);
+
+		if (!snapshot) {
+			for (GameVersion version : versions) {
+				if (version.isStable()) return version;
+			}
+
+			// nothing found, fall back to snapshot versions
 		}
+
+		return versions.get(0);
 	}
 
 	public static class GameVersion {
@@ -76,5 +80,4 @@ public class MetaHandler extends CompletableHandler<List<MetaHandler.GameVersion
 			return stable;
 		}
 	}
-
 }

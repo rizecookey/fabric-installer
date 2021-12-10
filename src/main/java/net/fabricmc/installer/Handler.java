@@ -20,6 +20,7 @@ import java.awt.Color;
 import java.awt.Container;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -30,11 +31,13 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JEditorPane;
+import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JTextField;
 import javax.swing.UIManager;
+import javax.swing.filechooser.FileNameExtensionFilter;
 
 import net.fabricmc.installer.util.ArgumentParser;
 import net.fabricmc.installer.util.InstallerProgress;
@@ -42,11 +45,12 @@ import net.fabricmc.installer.util.MetaHandler;
 import net.fabricmc.installer.util.Utils;
 
 public abstract class Handler implements InstallerProgress {
+	private static final String SELECT_CUSTOM_ITEM = "(select custom)";
 
 	public JButton buttonInstall;
 
 	public JComboBox<String> gameVersionComboBox;
-	public JComboBox<String> loaderVersionComboBox;
+	private JComboBox<String> loaderVersionComboBox;
 	public JTextField installLocation;
 	public JButton selectFolderButton;
 	public JLabel statusLabel;
@@ -121,17 +125,23 @@ public abstract class Handler implements InstallerProgress {
 
 		Main.LOADER_META.onComplete(versions -> {
 			int stableIndex = -1;
+
 			for (int i = 0; i < versions.size(); i++) {
 				MetaHandler.GameVersion version = versions.get(i);
 				loaderVersionComboBox.addItem(version.getVersion());
+
 				if (version.isStable()) {
 					stableIndex = i;
 				}
 			}
+
+			loaderVersionComboBox.addItem(SELECT_CUSTOM_ITEM);
+
 			//If no stable versions are found, default to the latest version
 			if (stableIndex == -1) {
 				stableIndex = 0;
 			}
+
 			loaderVersionComboBox.setSelectedIndex(stableIndex);
 			statusLabel.setText(Utils.BUNDLE.getString("prompt.ready.install"));
 		});
@@ -141,13 +151,47 @@ public abstract class Handler implements InstallerProgress {
 
 	private void updateGameVersions() {
 		gameVersionComboBox.removeAllItems();
+
 		for (MetaHandler.GameVersion version : Main.GAME_VERSION_META.getVersions()) {
 			if (!snapshotCheckBox.isSelected() && !version.isStable()) {
 				continue;
 			}
+
 			gameVersionComboBox.addItem(version.getVersion());
 		}
+
 		gameVersionComboBox.setSelectedIndex(0);
+	}
+
+	protected LoaderVersion queryLoaderVersion() {
+		String ret = (String) loaderVersionComboBox.getSelectedItem();
+
+		if (!ret.equals(SELECT_CUSTOM_ITEM)) {
+			return new LoaderVersion(ret);
+		} else {
+			// ask user for loader jar
+
+			JFileChooser chooser = new JFileChooser();
+			chooser.setCurrentDirectory(new File("."));
+			chooser.setDialogTitle("Select Fabric Loader JAR");
+			chooser.setFileFilter(new FileNameExtensionFilter("Java Archive", "jar"));
+			chooser.setAcceptAllFileFilterUsed(false);
+
+			if (chooser.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) {
+				return null;
+			}
+
+			File file = chooser.getSelectedFile();
+
+			// determine loader version from fabric.mod.json
+
+			try {
+				return new LoaderVersion(file.toPath());
+			} catch (IOException e) {
+				error(e);
+				return null;
+			}
+		}
 	}
 
 	@Override
@@ -186,12 +230,10 @@ public abstract class Handler implements InstallerProgress {
 		statusLabel.setText(throwable.getLocalizedMessage());
 		statusLabel.setForeground(Color.RED);
 
-		JOptionPane.showMessageDialog(
-				pane,
+		JOptionPane.showMessageDialog(pane,
 				textPane,
 				Utils.BUNDLE.getString("prompt.exception.occurrence"),
-				JOptionPane.ERROR_MESSAGE
-				);
+				JOptionPane.ERROR_MESSAGE);
 	}
 
 	protected void addRow(Container parent, Consumer<JPanel> consumer) {
@@ -203,11 +245,13 @@ public abstract class Handler implements InstallerProgress {
 	protected String getGameVersion(ArgumentParser args) {
 		return args.getOrDefault("mcversion", () -> {
 			System.out.println("Using latest game version");
+
 			try {
 				Main.GAME_VERSION_META.load();
 			} catch (IOException e) {
 				throw new RuntimeException("Failed to load latest versions", e);
 			}
+
 			return Main.GAME_VERSION_META.getLatestVersion(args.has("snapshot")).getVersion();
 		});
 	}
@@ -215,13 +259,14 @@ public abstract class Handler implements InstallerProgress {
 	protected String getLoaderVersion(ArgumentParser args) {
 		return args.getOrDefault("loader", () -> {
 			System.out.println("Using latest loader version");
+
 			try {
 				Main.LOADER_META.load();
 			} catch (IOException e) {
 				throw new RuntimeException("Failed to load latest versions", e);
 			}
+
 			return Main.LOADER_META.getLatestVersion(false).getVersion();
 		});
 	}
-
 }

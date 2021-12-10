@@ -22,6 +22,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.MessageFormat;
+import java.util.List;
+import java.util.Locale;
 
 import javax.swing.JCheckBox;
 import javax.swing.JEditorPane;
@@ -32,13 +34,14 @@ import javax.swing.event.HyperlinkEvent;
 
 import net.fabricmc.installer.Handler;
 import net.fabricmc.installer.InstallerGui;
+import net.fabricmc.installer.LoaderVersion;
+import net.fabricmc.installer.launcher.MojangLauncherHelperWrapper;
 import net.fabricmc.installer.util.ArgumentParser;
 import net.fabricmc.installer.util.InstallerProgress;
 import net.fabricmc.installer.util.Reference;
 import net.fabricmc.installer.util.Utils;
 
 public class ClientHandler extends Handler {
-
 	private JCheckBox createProfile;
 
 	@Override
@@ -48,31 +51,74 @@ public class ClientHandler extends Handler {
 
 	@Override
 	public void install() {
+		if (MojangLauncherHelperWrapper.isMojangLauncherOpen()) {
+			showLauncherOpenMessage();
+			return;
+		}
+
+		doInstall();
+	}
+
+	private void doInstall() {
 		String gameVersion = (String) gameVersionComboBox.getSelectedItem();
-		String loaderVersion = (String) loaderVersionComboBox.getSelectedItem();
+		LoaderVersion loaderVersion = queryLoaderVersion();
+		if (loaderVersion == null) return;
+
 		System.out.println("Installing");
+
 		new Thread(() -> {
 			try {
-				updateProgress(new MessageFormat(Utils.BUNDLE.getString("progress.installing")).format(new Object[]{loaderVersion}));
+				updateProgress(new MessageFormat(Utils.BUNDLE.getString("progress.installing")).format(new Object[]{loaderVersion.name}));
 				Path mcPath = Paths.get(installLocation.getText());
+
 				if (!Files.exists(mcPath)) {
 					throw new RuntimeException(Utils.BUNDLE.getString("progress.exception.no.launcher.directory"));
 				}
-				String profileName = ClientInstaller.install(mcPath, gameVersion, loaderVersion, this);
+
+				final ProfileInstaller profileInstaller = new ProfileInstaller(mcPath);
+				ProfileInstaller.LauncherType launcherType = null;
+
 				if (createProfile.isSelected()) {
-					ProfileInstaller.setupProfile(mcPath, profileName, gameVersion);
+					List<ProfileInstaller.LauncherType> types = profileInstaller.getInstalledLauncherTypes();
+
+					if (types.size() == 0) {
+						throw new RuntimeException(Utils.BUNDLE.getString("progress.exception.no.launcher.profile"));
+					} else if (types.size() == 1) {
+						launcherType = types.get(0);
+					} else {
+						launcherType = showLauncherTypeSelection();
+
+						if (launcherType == null) {
+							// canceled
+							statusLabel.setText(Utils.BUNDLE.getString("prompt.ready.install"));
+							return;
+						}
+					}
 				}
-				SwingUtilities.invokeLater(() -> showInstalledMessage(loaderVersion, gameVersion));
+
+				String profileName = ClientInstaller.install(mcPath, gameVersion, loaderVersion, this);
+
+				if (createProfile.isSelected()) {
+					if (launcherType == null) {
+						throw new RuntimeException(Utils.BUNDLE.getString("progress.exception.no.launcher.profile"));
+					}
+
+					profileInstaller.setupProfile(profileName, gameVersion, launcherType);
+				}
+
+				SwingUtilities.invokeLater(() -> showInstalledMessage(loaderVersion.name, gameVersion));
 			} catch (Exception e) {
 				error(e);
+			} finally {
+				buttonInstall.setEnabled(true);
 			}
-			buttonInstall.setEnabled(true);
 		}).start();
 	}
 
 	private void showInstalledMessage(String loaderVersion, String gameVersion) {
 		JEditorPane pane = new JEditorPane("text/html", "<html><body style=\"" + buildEditorPaneStyle() + "\">" + new MessageFormat(Utils.BUNDLE.getString("prompt.install.successful")).format(new Object[]{loaderVersion, gameVersion, Reference.fabricApiUrl}) + "</body></html>");
 		pane.setEditable(false);
+
 		pane.addHyperlinkListener(e -> {
 			try {
 				if (e.getEventType() == HyperlinkEvent.EventType.ACTIVATED) {
@@ -86,34 +132,86 @@ public class ClientHandler extends Handler {
 				error(throwable);
 			}
 		});
+
 		JOptionPane.showMessageDialog(null, pane, Utils.BUNDLE.getString("prompt.install.successful.title"), JOptionPane.INFORMATION_MESSAGE);
+	}
+
+	private ProfileInstaller.LauncherType showLauncherTypeSelection() {
+		Object[] options = { Utils.BUNDLE.getString("prompt.launcher.type.xbox"), Utils.BUNDLE.getString("prompt.launcher.type.win32")};
+
+		int result = JOptionPane.showOptionDialog(null,
+				Utils.BUNDLE.getString("prompt.launcher.type.body"),
+				Utils.BUNDLE.getString("installer.title"),
+				JOptionPane.YES_NO_CANCEL_OPTION,
+				JOptionPane.QUESTION_MESSAGE,
+				null,
+				options,
+				options[0]
+		);
+
+		if (result == JOptionPane.CLOSED_OPTION) {
+			return null;
+		}
+
+		return result == JOptionPane.YES_OPTION ? ProfileInstaller.LauncherType.MICROSOFT_STORE : ProfileInstaller.LauncherType.WIN32;
+	}
+
+	private void showLauncherOpenMessage() {
+		int result = JOptionPane.showConfirmDialog(null, Utils.BUNDLE.getString("prompt.launcher.open.body"), Utils.BUNDLE.getString("prompt.launcher.open.tile"), JOptionPane.YES_NO_OPTION);
+
+		if (result == JOptionPane.YES_OPTION) {
+			doInstall();
+		} else {
+			buttonInstall.setEnabled(true);
+		}
 	}
 
 	@Override
 	public void installCli(ArgumentParser args) throws Exception {
 		Path path = Paths.get(args.getOrDefault("dir", () -> Utils.findDefaultInstallDir().toString()));
+
 		if (!Files.exists(path)) {
-			throw new FileNotFoundException("Launcher directory not found at " + path.toString());
+			throw new FileNotFoundException("Launcher directory not found at " + path);
 		}
 
 		String gameVersion = getGameVersion(args);
-		String loaderVersion = getLoaderVersion(args);
+		LoaderVersion loaderVersion = new LoaderVersion(getLoaderVersion(args));
 
 		String profileName = ClientInstaller.install(path, gameVersion, loaderVersion, InstallerProgress.CONSOLE);
+
 		if (args.has("noprofile")) {
 			return;
 		}
-		ProfileInstaller.setupProfile(path, profileName, gameVersion);
+
+		ProfileInstaller profileInstaller = new ProfileInstaller(path);
+		List<ProfileInstaller.LauncherType> types = profileInstaller.getInstalledLauncherTypes();
+		ProfileInstaller.LauncherType launcherType = null;
+
+		if (args.has("launcher")) {
+			launcherType = ProfileInstaller.LauncherType.valueOf(args.get("launcher").toUpperCase(Locale.ROOT));
+		}
+
+		if (launcherType == null) {
+			if (types.size() == 0) {
+				throw new FileNotFoundException("Could not find a valid launcher profile .json");
+			} else if (types.size() == 1) {
+				// Only 1 launcher type found, install to that.
+				launcherType = types.get(0);
+			} else {
+				throw new FileNotFoundException("Multiple launcher installations were found, please specify the target launcher using -launcher");
+			}
+		}
+
+		profileInstaller.setupProfile(profileName, gameVersion, launcherType);
 	}
 
 	@Override
 	public String cliHelp() {
-		return "-dir <install dir> -mcversion <minecraft version, default latest> -loader <loader version, default latest>";
+		return "-dir <install dir> -mcversion <minecraft version, default latest> -loader <loader version, default latest> -launcher [win32, microsoft_store]";
 	}
 
 	@Override
 	public void setupPane1(JPanel pane, InstallerGui installerGui) {
-
 	}
 
 	@Override
@@ -122,5 +220,4 @@ public class ClientHandler extends Handler {
 
 		installLocation.setText(Utils.findDefaultInstallDir().toString());
 	}
-
 }
