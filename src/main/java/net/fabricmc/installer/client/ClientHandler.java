@@ -17,6 +17,7 @@
 package net.fabricmc.installer.client;
 
 import java.awt.Desktop;
+import java.awt.GridBagConstraints;
 import java.io.FileNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -116,7 +117,7 @@ public class ClientHandler extends Handler {
 	}
 
 	private void showInstalledMessage(String loaderVersion, String gameVersion) {
-		JEditorPane pane = new JEditorPane("text/html", "<html><body style=\"" + buildEditorPaneStyle() + "\">" + new MessageFormat(Utils.BUNDLE.getString("prompt.install.successful")).format(new Object[]{loaderVersion, gameVersion, Reference.fabricApiUrl}) + "</body></html>");
+		JEditorPane pane = new JEditorPane("text/html", "<html><body style=\"" + buildEditorPaneStyle() + "\">" + new MessageFormat(Utils.BUNDLE.getString("prompt.install.successful")).format(new Object[]{loaderVersion, gameVersion, Reference.FABRIC_API_URL}) + "</body></html>");
 		pane.setEditable(false);
 
 		pane.addHyperlinkListener(e -> {
@@ -147,7 +148,7 @@ public class ClientHandler extends Handler {
 				null,
 				options,
 				options[0]
-		);
+				);
 
 		if (result == JOptionPane.CLOSED_OPTION) {
 			return null;
@@ -211,12 +212,9 @@ public class ClientHandler extends Handler {
 	}
 
 	@Override
-	public void setupPane1(JPanel pane, InstallerGui installerGui) {
-	}
-
-	@Override
-	public void setupPane2(JPanel pane, InstallerGui installerGui) {
-		addRow(pane, jPanel -> jPanel.add(createProfile = new JCheckBox(Utils.BUNDLE.getString("option.create.profile"), true)));
+	public void setupPane2(JPanel pane, GridBagConstraints c, InstallerGui installerGui) {
+		addRow(pane, c, null,
+				createProfile = new JCheckBox(Utils.BUNDLE.getString("option.create.profile"), true));
 
 		installLocation.setText(Utils.findDefaultInstallDir().toString());
 	}

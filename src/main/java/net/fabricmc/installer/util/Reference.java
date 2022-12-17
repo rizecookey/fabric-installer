@@ -19,12 +19,19 @@ package net.fabricmc.installer.util;
 public class Reference {
 	public static final String LOADER_NAME = "fabric-loader";
 
-	public static String metaServerUrl = "https://meta.combatreforged.com/";
-	public static String fabricApiUrl = "https://www.curseforge.com/minecraft/mc-mods/fabric-api/";
-	public static String minecraftLauncherManifest = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
-	public static String experimentalVersionsManifest = "https://maven.fabricmc.net/net/minecraft/experimental_versions.json";
+	public static final String FABRIC_API_URL = "https://www.curseforge.com/minecraft/mc-mods/fabric-api/";
+	public static final String SERVER_LAUNCHER_URL = "https://fabricmc.net/use/server/";
+	public static final String MINECRAFT_LAUNCHER_MANIFEST = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json";
+	public static final String EXPERIMENTAL_LAUNCHER_MANIFEST = "https://maven.fabricmc.net/net/minecraft/experimental_versions.json";
 
-	public static String getMetaServerEndpoint(String path) {
-		return metaServerUrl + path;
-	}
+	static final String DEFAULT_META_SERVER = "https://meta.fabric.rizecookey.net/";
+	static final String DEFAULT_MAVEN_SERVER = "https://maven.fabric.rizecookey.net/";
+
+	static final FabricService[] FABRIC_SERVICES = {
+			new FabricService(DEFAULT_META_SERVER, DEFAULT_MAVEN_SERVER),
+			new FabricService("https://meta.fabricmc.net/", "https://maven.fabricmc.net/"),
+			// Do not use these fallback servers to interact with our web services. They can and will be unavailable at times and only support limited throughput.
+			new FabricService("https://meta2.fabricmc.net/", "https://maven2.fabricmc.net/"),
+			new FabricService("https://meta3.fabricmc.net/", "https://maven3.fabricmc.net/")
+	};
 }
